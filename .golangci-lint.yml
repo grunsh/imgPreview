@@ -1,0 +1,76 @@
+run:
+  tests: true
+
+linters-settings:
+  depguard:
+    Main:
+      files:
+        - $all
+      allow:
+        - $gostd
+        - github.com/disintegration/imaging
+        - github.com/stretchr/testify
+        - github.com/stretchr/testify/assert
+        - github.com/stretchr/testify/require
+      deny:
+        reflect: Please don't use reflect package
+    Test:
+      files:
+        - $test
+      allow:
+        - $gostd
+        - github.com/stretchr/testify
+        - github.com/stretchr/testify/assert
+        - github.com/stretchr/testify/require
+
+linters:
+  disable-all: true
+  enable:
+    - asciicheck
+    - bodyclose
+    - dogsled
+    - dupl
+    - durationcheck
+    - errorlint
+    - exhaustive
+    - copyloopvar
+    - funlen
+    - gci
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - gofmt
+    - goheader
+    - gomoddirectives
+    - gomodguard
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - importas
+    - ineffassign
+    - lll
+    - makezero
+    - misspell
+    - nestif
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - stylecheck
+    - tagliatelle
+    - thelper
+    - tparallel
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - wastedassign
+    - whitespace
