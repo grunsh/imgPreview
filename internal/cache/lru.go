@@ -8,7 +8,7 @@ import (
 	"io"
 	"sync"
 
-	"imageproxy/internal/storage"
+	"github.com/grunsh/imgPreview/internal/storage"
 )
 
 // LRUCache реализация LRU кэша.

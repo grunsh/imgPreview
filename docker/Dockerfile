@@ -7,8 +7,6 @@ LABEL description="Nginx с 10-тью картинками в каталоге /
 
 # Создаем рабочую директорию для изображений
 RUN mkdir -p /usr/share/nginx/html/images
-RUN pwd
-RUN echo "$PWD"
 # Копируем изображения (используем .dockerignore для исключения ненужных файлов)
 COPY ./images/ /usr/share/nginx/html/images/
 

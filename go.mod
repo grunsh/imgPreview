@@ -1,4 +1,4 @@
-module imageproxy
+module github.com/grunsh/imgPreview
 
 go 1.24.0
 

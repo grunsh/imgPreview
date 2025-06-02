@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"imageproxy/internal/cache"
-	"imageproxy/internal/processor"
-	Storage "imageproxy/internal/storage"
+	"github.com/grunsh/imgPreview/internal/cache"
+	"github.com/grunsh/imgPreview/internal/processor"
+	Storage "github.com/grunsh/imgPreview/internal/storage"
 )
 
 var (
@@ -57,13 +57,21 @@ func RunServer(cacheCapacity int) {
 			return
 		}
 
-		data, contentType, err := processor.ProcessImage(r.Context(), url, width, height)
+		data, headers, err := processor.ProcessImage(r.Context(), url, width, height)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", contentType)
+		// Копируем заголовки из оригинального ответа
+		for key, values := range headers {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+
+		// Устанавливаем Content-Type и Content-Length
+		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(data); err != nil {
@@ -74,9 +82,9 @@ func RunServer(cacheCapacity int) {
 	fmt.Printf("Server listening on :%s (cache capacity: %d)\n", port, cacheCapacity)
 	server := &http.Server{
 		Addr:         ":" + port,
-		ReadTimeout:  5 * time.Second,   // максимальное время чтения запроса
-		WriteTimeout: 10 * time.Second,  // максимальное время записи ответа
-		IdleTimeout:  120 * time.Second, // максимальное время ожидания следующего запроса
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Printf("Server error: %v\n", err)

@@ -1,6 +1,4 @@
-FROM golang:1.19
-
-#WORKDIR /app
+FROM golang:1.24
 
 COPY server/ ./server
 RUN go mod download

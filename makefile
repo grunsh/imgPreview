@@ -2,7 +2,7 @@
 
 # Variables
 DOCKER_COMPOSE_FILE := docker/docker-compose.yml
-APP_NAME := imgScale
+APP_NAME := imgPreview
 PORT := 8081
 STORAGE_TYPE := memory
 TEST_NGINX_PORT := 8082  # Используем другой порт для тестов

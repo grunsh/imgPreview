@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"testing"
@@ -22,34 +25,40 @@ const (
 )
 
 func TestIntegration(t *testing.T) {
-
 	if os.Getenv("CI") == "true" {
 		t.Skip("Skipping integration test in CI")
 	}
 
-	// 0. Проверяем доступность docker
+	// Проверяем доступность docker
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker not available, skipping integration test")
 	}
 
-	// 1. Проверяем, что образ существует
+	// Проверяем, что образ существует
 	checkDockerImageExists(t)
 
-	// 2. Останавливаем и удаляем старый контейнер, если существует
+	// Останавливаем и удаляем старый контейнер, если существует
 	cleanupOldContainer(t)
 
-	// 3. Запускаем новый контейнер с nginx
+	// Запускаем новый контейнер с nginx
 	startNginxContainer(t)
 	defer cleanupOldContainer(t)
 
-	// 4. Проверяем доступность nginx
+	// Проверяем доступность nginx
 	verifyNginxIsReady(t)
 
-	// 5. Запускаем наше приложение
+	// Запускаем наше приложение
 	startApplication(t)
 
-	// 6. Выполняем тестовые запросы
+	// Выполняем тестовые запросы
 	testImageResizing(t)
+	testCacheHit(t)
+	testRemoteServerNotFound(t)
+	testRemoteImageNotFound(t)
+	testInvalidImageContent(t)
+	testRemoteServerError(t)
+	testSmallImageResizing(t)
+	testHeaderForwarding(t)
 }
 
 func checkDockerImageExists(t *testing.T) {
@@ -71,7 +80,6 @@ func startNginxContainer(t *testing.T) {
 	t.Helper()
 	t.Log("Starting nginx container...")
 
-	//nolint:gosec
 	cmd := exec.Command("docker", "run",
 		"--name", nginxContainerName,
 		"-d",
@@ -89,7 +97,6 @@ func verifyNginxIsReady(t *testing.T) {
 	url := fmt.Sprintf("http://localhost:%s/images/%s", nginxPort, testImageName)
 
 	require.Eventually(t, func() bool {
-		//nolint:noctx
 		resp, err := client.Get(url)
 		if err != nil {
 			t.Logf("Nginx not ready yet: %v", err)
@@ -102,7 +109,6 @@ func verifyNginxIsReady(t *testing.T) {
 			return false
 		}
 
-		// Проверяем, что это действительно изображение
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Logf("Failed to read response: %v", err)
@@ -125,10 +131,8 @@ func startApplication(t *testing.T) {
 	os.Setenv("STORAGE_TYPE", "memory")
 	go main()
 
-	// Ждем пока приложение станет доступно
 	client := http.Client{Timeout: 1 * time.Second}
 	require.Eventually(t, func() bool {
-		//nolint:noctx
 		resp, err := client.Get(fmt.Sprintf("http://localhost:%s/health", appPort))
 		if err != nil {
 			t.Logf("Application not ready yet: %v", err)
@@ -144,21 +148,188 @@ func testImageResizing(t *testing.T) {
 	t.Run("Resize image from nginx", func(t *testing.T) {
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/localhost:%s/images/%s",
 			appPort, nginxPort, testImageName)
-		//nolint:noctx,gosec
 		resp, err := http.Get(url)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			t.Fatalf("Unexpected status code: %d, body: %s", resp.StatusCode, string(body))
-		}
-
+		require.Equal(t, http.StatusOK, resp.StatusCode, "Unexpected status code")
 		require.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"), "Unexpected content type")
 
 		imgData, err := io.ReadAll(resp.Body)
 		require.NoError(t, err, "Failed to read response body")
 		require.True(t, len(imgData) > 0, "Empty image received")
 		require.True(t, bytes.HasPrefix(imgData, []byte{0xFF, 0xD8, 0xFF}), "Invalid JPEG format")
+	})
+}
+
+func testCacheHit(t *testing.T) {
+	t.Helper()
+	t.Run("Image found in cache", func(t *testing.T) {
+		// Первый запрос - должен загрузить в кэш
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/localhost:%s/images/%s",
+			appPort, nginxPort, testImageName)
+		resp, err := http.Get(url)
+		require.NoError(t, err, "First request failed")
+		resp.Body.Close()
+
+		// Второй запрос - должен использовать кэш
+		resp, err = http.Get(url)
+		require.NoError(t, err, "Second request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "Unexpected status code")
+		require.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"), "Unexpected content type")
+
+		imgData, err := io.ReadAll(resp.Body)
+		require.NoError(t, err, "Failed to read response body")
+		require.True(t, len(imgData) > 0, "Empty image received")
+		require.True(t, bytes.HasPrefix(imgData, []byte{0xFF, 0xD8, 0xFF}), "Invalid JPEG format")
+	})
+}
+
+func testRemoteServerNotFound(t *testing.T) {
+	t.Helper()
+	t.Run("Remote server not found", func(t *testing.T) {
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/nonexistentserver/images/%s",
+			appPort, testImageName)
+		resp, err := http.Get(url)
+		require.NoError(t, err, "Request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, "Unexpected status code")
+		body, _ := io.ReadAll(resp.Body)
+		require.Contains(t, string(body), "failed to download image", "Unexpected error message")
+	})
+}
+
+func testRemoteImageNotFound(t *testing.T) {
+	t.Helper()
+	t.Run("Remote image not found (404)", func(t *testing.T) {
+		// Создаем тестовый HTTP сервер, который возвращает 404
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/nonexistent.jpg",
+			appPort, server.URL[len("http://"):])
+		resp, err := http.Get(url)
+		require.NoError(t, err, "Request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, "Unexpected status code")
+		body, _ := io.ReadAll(resp.Body)
+		require.Contains(t, string(body), "server returned status: 404", "Unexpected error message")
+	})
+}
+
+func testInvalidImageContent(t *testing.T) {
+	t.Helper()
+	t.Run("Remote server returns non-image content", func(t *testing.T) {
+		// Создаем тестовый HTTP сервер, который возвращает exe-файл
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write([]byte("MZ"))
+		}))
+		defer server.Close()
+
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/fake.exe",
+			appPort, server.URL[len("http://"):])
+		resp, err := http.Get(url)
+		require.NoError(t, err, "Request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, "Unexpected status code")
+		body, _ := io.ReadAll(resp.Body)
+		require.Contains(t, string(body), "failed to decode image", "Unexpected error message")
+	})
+}
+
+func testRemoteServerError(t *testing.T) {
+	t.Helper()
+	t.Run("Remote server returns error", func(t *testing.T) {
+		// Создаем тестовый HTTP сервер, который возвращает 500
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/images/%s",
+			appPort, server.URL[len("http://"):], testImageName)
+		resp, err := http.Get(url)
+		require.NoError(t, err, "Request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode, "Unexpected status code")
+		body, _ := io.ReadAll(resp.Body)
+		require.Contains(t, string(body), "server returned status: 500", "Unexpected error message")
+	})
+}
+
+func testSmallImageResizing(t *testing.T) {
+	t.Helper()
+	t.Run("Image smaller than requested size", func(t *testing.T) {
+		// Создаем тестовый HTTP сервер с маленьким изображением (10x10)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Создаем маленькое изображение 10x10
+			img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+			var buf bytes.Buffer
+			if err := jpeg.Encode(&buf, img, nil); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Write(buf.Bytes())
+		}))
+		defer server.Close()
+
+		// Запрашиваем размер больше, чем оригинал (300x200)
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/small.jpg",
+			appPort, server.URL[len("http://"):])
+		resp, err := http.Get(url)
+		require.NoError(t, err, "Request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "Unexpected status code")
+		require.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"), "Unexpected content type")
+
+		imgData, err := io.ReadAll(resp.Body)
+		require.NoError(t, err, "Failed to read response body")
+		require.True(t, len(imgData) > 0, "Empty image received")
+		require.True(t, bytes.HasPrefix(imgData, []byte{0xFF, 0xD8, 0xFF}), "Invalid JPEG format")
+	})
+}
+
+func testHeaderForwarding(t *testing.T) {
+	t.Helper()
+	t.Run("HTTP headers forwarding", func(t *testing.T) {
+		// Создаем тестовый HTTP сервер с кастомными заголовками
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Custom-Header", "test-value")
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+
+			// Создаем тестовое изображение
+			img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+			var buf bytes.Buffer
+			if err := jpeg.Encode(&buf, img, nil); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			w.Write(buf.Bytes())
+		}))
+		defer server.Close()
+
+		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/test.jpg",
+			appPort, server.URL[len("http://"):])
+		resp, err := http.Get(url)
+		require.NoError(t, err, "Request failed")
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "Unexpected status code")
+		require.Equal(t, "test-value", resp.Header.Get("X-Custom-Header"), "Custom header not forwarded")
+		require.Equal(t, "public, max-age=3600", resp.Header.Get("Cache-Control"), "Cache-Control header not forwarded")
+		require.Equal(t, "Wed, 21 Oct 2015 07:28:00 GMT", resp.Header.Get("Last-Modified"), "Last-Modified header not forwarded")
 	})
 }

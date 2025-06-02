@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
-	"imageproxy/internal/cache"
+	"github.com/grunsh/imgPreview/internal/cache"
 )
 
 // ImageProcessor обработчик изображений.
@@ -28,7 +28,12 @@ func NewImageProcessor(cache *cache.LRUCache) *ImageProcessor {
 	}
 }
 
-func (p *ImageProcessor) GetOriginalImage(ctx context.Context, url string) (image.Image, error) {
+type OriginalImageResponse struct {
+	Image   image.Image
+	Headers http.Header
+}
+
+func (p *ImageProcessor) GetOriginalImage(ctx context.Context, url string) (*OriginalImageResponse, error) {
 	// Ключ кэша - только URL без размеров
 	cacheKey := url
 
@@ -40,13 +45,18 @@ func (p *ImageProcessor) GetOriginalImage(ctx context.Context, url string) (imag
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode cached image: %w", err)
 		}
-		return img, nil
+		return &OriginalImageResponse{Image: img}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("failed to get from cache: %w", err)
 	}
 
-	// Если в кэше нет, скачиваем изображение
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+url, nil)
+	// Если в кэше нет, скачиваем изображение. Для начала тестируем https, т.е. префикс нам не передают.
+	httpsURL := "https://" + url
+	_, err = http.Head(httpsURL)
+	if err != nil {
+		httpsURL = "http://" + url
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", httpsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -77,24 +87,27 @@ func (p *ImageProcessor) GetOriginalImage(ctx context.Context, url string) (imag
 		return nil, fmt.Errorf("failed to cache image: %w", err)
 	}
 
-	return img, nil
+	return &OriginalImageResponse{
+		Image:   img,
+		Headers: resp.Header,
+	}, nil
 }
 
-func (p *ImageProcessor) ProcessImage(ctx context.Context, url string, width, height int) ([]byte, string, error) {
+func (p *ImageProcessor) ProcessImage(ctx context.Context, url string, width, height int) ([]byte, http.Header, error) {
 	// Получаем оригинальное изображение (из кэша или скачиваем)
-	img, err := p.GetOriginalImage(ctx, url)
+	resp, err := p.GetOriginalImage(ctx, url)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 
 	// Масштабируем изображение с использованием библиотеки imaging
-	resizedImg := imaging.Resize(img, width, height, imaging.Lanczos)
+	resizedImg := imaging.Resize(resp.Image, width, height, imaging.Lanczos)
 
 	// Кодируем в JPEG
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, resizedImg, &jpeg.Options{Quality: 85}); err != nil {
-		return nil, "", fmt.Errorf("failed to encode image: %w", err)
+		return nil, nil, fmt.Errorf("failed to encode image: %w", err)
 	}
 
-	return buf.Bytes(), "image/jpeg", nil
+	return buf.Bytes(), resp.Headers, nil
 }
