@@ -25,7 +25,7 @@ const (
 )
 
 func TestIntegration(t *testing.T) {
-	if os.Getenv("CI") == "true" {
+	if os.Getenv("CI") == "true" || os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Skip("Skipping integration test in CI")
 	}
 
