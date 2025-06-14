@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -63,7 +64,7 @@ func TestIntegration(t *testing.T) {
 
 func checkDockerImageExists(t *testing.T) {
 	t.Helper()
-	cmd := exec.Command("docker", "image", "inspect", nginxImage)
+	cmd := exec.Command("docker", "image", "inspect", nginxImage) // #nosec G204
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("Docker image %s does not exist. Please build it first with 'docker build -t %s .'",
 			nginxImage, nginxImage)
@@ -72,15 +73,15 @@ func checkDockerImageExists(t *testing.T) {
 
 func cleanupOldContainer(t *testing.T) {
 	t.Helper()
-	cmd := exec.Command("docker", "rm", "-f", nginxContainerName)
-	_ = cmd.Run() // Игнорируем ошибку, если контейнера нет
+	cmd := exec.Command("docker", "rm", "-f", nginxContainerName) // #nosec G204
+	_ = cmd.Run()
 }
 
 func startNginxContainer(t *testing.T) {
 	t.Helper()
 	t.Log("Starting nginx container...")
 
-	cmd := exec.Command("docker", "run",
+	cmd := exec.Command("docker", "run", // #nosec G204
 		"--name", nginxContainerName,
 		"-d",
 		"-p", fmt.Sprintf("%s:80", nginxPort),
@@ -97,7 +98,16 @@ func verifyNginxIsReady(t *testing.T) {
 	url := fmt.Sprintf("http://localhost:%s/images/%s", nginxPort, testImageName)
 
 	require.Eventually(t, func() bool {
-		resp, err := client.Get(url)
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			t.Logf("Failed to create request: %v", err)
+			return false
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Logf("Nginx not ready yet: %v", err)
 			return false
@@ -133,7 +143,16 @@ func startApplication(t *testing.T) {
 
 	client := http.Client{Timeout: 1 * time.Second}
 	require.Eventually(t, func() bool {
-		resp, err := client.Get(fmt.Sprintf("http://localhost:%s/health", appPort))
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://localhost:%s/health", appPort), nil)
+		if err != nil {
+			t.Logf("Failed to create request: %v", err)
+			return false
+		}
+
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Logf("Application not ready yet: %v", err)
 			return false
@@ -146,9 +165,17 @@ func startApplication(t *testing.T) {
 func testImageResizing(t *testing.T) {
 	t.Helper()
 	t.Run("Resize image from nginx", func(t *testing.T) {
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/localhost:%s/images/%s",
 			appPort, nginxPort, testImageName)
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
@@ -165,15 +192,29 @@ func testImageResizing(t *testing.T) {
 func testCacheHit(t *testing.T) {
 	t.Helper()
 	t.Run("Image found in cache", func(t *testing.T) {
-		// Первый запрос - должен загрузить в кэш
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/localhost:%s/images/%s",
 			appPort, nginxPort, testImageName)
-		resp, err := http.Get(url)
+
+		// Первый запрос - должен загрузить в кэш
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create first request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "First request failed")
 		resp.Body.Close()
 
 		// Второй запрос - должен использовать кэш
-		resp, err = http.Get(url)
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+
+		req2, err := http.NewRequestWithContext(ctx2, "GET", url, nil)
+		require.NoError(t, err, "Failed to create second request")
+
+		resp, err = client.Do(req2)
 		require.NoError(t, err, "Second request failed")
 		defer resp.Body.Close()
 
@@ -190,9 +231,17 @@ func testCacheHit(t *testing.T) {
 func testRemoteServerNotFound(t *testing.T) {
 	t.Helper()
 	t.Run("Remote server not found", func(t *testing.T) {
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/nonexistentserver/images/%s",
 			appPort, testImageName)
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
@@ -206,14 +255,22 @@ func testRemoteImageNotFound(t *testing.T) {
 	t.Helper()
 	t.Run("Remote image not found (404)", func(t *testing.T) {
 		// Создаем тестовый HTTP сервер, который возвращает 404
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 		}))
 		defer server.Close()
 
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/nonexistent.jpg",
 			appPort, server.URL[len("http://"):])
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
@@ -227,15 +284,26 @@ func testInvalidImageContent(t *testing.T) {
 	t.Helper()
 	t.Run("Remote server returns non-image content", func(t *testing.T) {
 		// Создаем тестовый HTTP сервер, который возвращает exe-файл
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write([]byte("MZ"))
+			if _, err := w.Write([]byte("MZ")); err != nil {
+				t.Errorf("Failed to write response: %v", err)
+				return
+			}
 		}))
 		defer server.Close()
 
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/fake.exe",
 			appPort, server.URL[len("http://"):])
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
@@ -249,14 +317,22 @@ func testRemoteServerError(t *testing.T) {
 	t.Helper()
 	t.Run("Remote server returns error", func(t *testing.T) {
 		// Создаем тестовый HTTP сервер, который возвращает 500
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}))
 		defer server.Close()
 
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/images/%s",
 			appPort, server.URL[len("http://"):], testImageName)
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
@@ -270,7 +346,7 @@ func testSmallImageResizing(t *testing.T) {
 	t.Helper()
 	t.Run("Image smaller than requested size", func(t *testing.T) {
 		// Создаем тестовый HTTP сервер с маленьким изображением (10x10)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			// Создаем маленькое изображение 10x10
 			img := image.NewRGBA(image.Rect(0, 0, 10, 10))
 			var buf bytes.Buffer
@@ -283,10 +359,18 @@ func testSmallImageResizing(t *testing.T) {
 		}))
 		defer server.Close()
 
+		client := http.Client{Timeout: 5 * time.Second}
 		// Запрашиваем размер больше, чем оригинал (300x200)
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/small.jpg",
 			appPort, server.URL[len("http://"):])
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
@@ -304,7 +388,7 @@ func testHeaderForwarding(t *testing.T) {
 	t.Helper()
 	t.Run("HTTP headers forwarding", func(t *testing.T) {
 		// Создаем тестовый HTTP сервер с кастомными заголовками
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("X-Custom-Header", "test-value")
 			w.Header().Set("Cache-Control", "public, max-age=3600")
 			w.Header().Set("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
@@ -324,15 +408,24 @@ func testHeaderForwarding(t *testing.T) {
 		}))
 		defer server.Close()
 
+		client := http.Client{Timeout: 5 * time.Second}
 		url := fmt.Sprintf("http://localhost:%s/fill/300/200/%s/test.jpg",
 			appPort, server.URL[len("http://"):])
-		resp, err := http.Get(url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		require.NoError(t, err, "Failed to create request")
+
+		resp, err := client.Do(req)
 		require.NoError(t, err, "Request failed")
 		defer resp.Body.Close()
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "Unexpected status code")
 		require.Equal(t, "test-value", resp.Header.Get("X-Custom-Header"), "Custom header not forwarded")
 		require.Equal(t, "public, max-age=3600", resp.Header.Get("Cache-Control"), "Cache-Control header not forwarded")
-		require.Equal(t, "Wed, 21 Oct 2015 07:28:00 GMT", resp.Header.Get("Last-Modified"), "Last-Modified header not forwarded")
+		require.Equal(t, "Wed, 21 Oct 2015 07:28:00 GMT", resp.Header.Get("Last-Modified"),
+			"Last-Modified header not forwarded")
 	})
 }

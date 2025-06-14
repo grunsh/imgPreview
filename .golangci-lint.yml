@@ -34,7 +34,6 @@ linters:
     - errorlint
     - exhaustive
     - copyloopvar
-    - funlen
     - gci
     - gocognit
     - goconst

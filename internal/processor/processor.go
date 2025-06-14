@@ -23,8 +23,14 @@ type ImageProcessor struct {
 
 func NewImageProcessor(cache *cache.LRUCache) *ImageProcessor {
 	return &ImageProcessor{
-		cache:  cache,
-		client: &http.Client{Timeout: 30 * time.Second},
+		cache: cache,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+			// Добавляем Transport с безопасными настройками
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		},
 	}
 }
 
@@ -50,18 +56,33 @@ func (p *ImageProcessor) GetOriginalImage(ctx context.Context, url string) (*Ori
 		return nil, fmt.Errorf("failed to get from cache: %w", err)
 	}
 
-	// Если в кэше нет, скачиваем изображение. Для начала тестируем https, т.е. префикс нам не передают.
+	// Если в кэше нет, скачиваем изображение
 	httpsURL := "https://" + url
-	_, err = http.Head(httpsURL)
+	req, err := http.NewRequestWithContext(ctx, "HEAD", httpsURL, nil)
 	if err != nil {
-		httpsURL = "http://" + url
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", httpsURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create HEAD request: %w", err)
 	}
 
+	// Проверяем доступность HTTPS
 	resp, err := p.client.Do(req)
+	if err != nil {
+		// Пробуем HTTP
+		httpURL := "http://" + url
+		req, err = http.NewRequestWithContext(ctx, "GET", httpURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GET request: %w", err)
+		}
+	} else {
+		resp.Body.Close()
+		// Используем HTTPS, если доступен
+		req, err = http.NewRequestWithContext(ctx, "GET", httpsURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GET request: %w", err)
+		}
+	}
+
+	// Выполняем основной запрос
+	resp, err = p.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download image: %w", err)
 	}
