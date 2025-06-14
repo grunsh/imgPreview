@@ -355,7 +355,10 @@ func testSmallImageResizing(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "image/jpeg")
-			w.Write(buf.Bytes())
+			if _, err := w.Write(buf.Bytes()); err != nil {
+				t.Errorf("Failed to write response: %v", err)
+				return
+			}
 		}))
 		defer server.Close()
 
